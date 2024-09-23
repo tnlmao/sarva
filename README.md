@@ -1,4 +1,4 @@
-# Raft Distributed Consensus
+# Data storage in redis and Raft consensus algorithm Implementation
 
 ## Overview
 

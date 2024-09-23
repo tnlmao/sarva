@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements the Raft consensus algorithm, which is used for managing a replicated log across a distributed system. Raft is designed to be understandable and is often used in systems requiring fault tolerance and consistency.
+This project implements the Raft consensus algorithm, which is used for managing a replicated log across a distributed system. Raft is designed to be understandable and is often used in systems requiring fault tolerance and consistency. In this project we are adding the data (file metadata) to redis. 
 
 
 ## Architecture
@@ -30,3 +30,4 @@ The architecture consists of the following components:
     go mod tidy
 3. Start Application
     go run main.go
+4. Upload a file and Trigger the endpoint

@@ -3,16 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"sarva/internal/adaptor/fileprocessor"
 	"sarva/internal/adaptor/logger"
 	"sarva/internal/adaptor/raft"
 	"sarva/internal/adaptor/redis"
 	"sarva/internal/port"
 	"sarva/internal/service"
 
-	"sarva/internal/adaptor/fileprocessor"
-
 	"github.com/gin-gonic/gin"
 	r "github.com/go-redis/redis/v8"
+	n "github.com/hashicorp/raft"
 )
 
 func main() {
@@ -26,7 +26,12 @@ func main() {
 		return
 	}
 
-	raftNode := raft.SetupRaft(rdb)
+	nodeMap := make(map[n.ServerID]n.ServerAddress)
+	nodeMap[n.ServerID("node1")] = n.ServerAddress("127.0.0.1:5001")
+	nodeMap[n.ServerID("node2")] = n.ServerAddress("127.0.0.1:5002")
+	nodeMap[n.ServerID("node3")] = n.ServerAddress("127.0.0.1:5003")
+
+	raftNode := raft.SetupRaftCluster(rdb, nodeMap)
 	consensus := raft.NewRaftAdapter(rdb, raftNode)
 	logger := logger.NewHclogAdapter()
 

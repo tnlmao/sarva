@@ -32,10 +32,10 @@ func (s *FileService) UploadFile(filePath string) error {
 		return err
 	}
 
-	if err := s.repository.SaveFile(*file); err != nil {
-		s.logger.Log("ERROR", "Failed to save file to database")
-		return err
-	}
+	// if err := s.repository.SaveFile(*file); err != nil {
+	// 	s.logger.Log("ERROR", "Failed to save file to database")
+	// 	return err
+	// }
 
 	s.logger.Log("INFO", "File uploaded successfully")
 	return nil

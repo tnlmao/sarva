@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,82 +15,100 @@ import (
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 )
 
+type RaftNode struct {
+	ID   raft.ServerID
+	Addr raft.ServerAddress
+	Raft *raft.Raft
+}
 type RaftAdapter struct {
 	redisClient *redis.Client
-	raftNode    *raft.Raft
+	raftNode    map[raft.ServerID]*RaftNode
 }
 
-func NewRaftAdapter(redisClient *redis.Client, raftNode *raft.Raft) *RaftAdapter {
+func NewRaftAdapter(redisClient *redis.Client, raftNodes map[raft.ServerID]*RaftNode) *RaftAdapter {
 	return &RaftAdapter{
 		redisClient: redisClient,
-		raftNode:    raftNode,
+		raftNode:    raftNodes,
 	}
 }
 
 func (r *RaftAdapter) UpdateDatabase(file domain.File) error {
 
-	if r.raftNode.State() != raft.Leader {
-		return fmt.Errorf("node is not the leader, cannot update database")
+	leader := GetLeader(r.raftNode)
+	fmt.Println("leader", leader)
+	if leader.State() != raft.Leader {
+		log.Println("This  is not the leader.")
+		return errors.New("this is not the leader node")
 	}
-
 	command := fmt.Sprintf("SET %s %d", file.Name, file.Size)
-	future := r.raftNode.Apply([]byte(command), 10*time.Second)
-
+	future := leader.Apply([]byte(command), 10*time.Second)
 	if err := future.Error(); err != nil {
-		fmt.Println("Error", "Error applying command to Raft")
 		return fmt.Errorf("raft consensus failed: %v", err)
 	}
-
-	ctx := context.Background()
-	err := r.redisClient.Set(ctx, file.Name, file.Size, 0).Err()
-	if err != nil {
-		fmt.Println("Error", err.Error())
-		return fmt.Errorf("failed to update Redis: %v", err)
-	}
-
 	log.Printf("File %s (size: %d) successfully stored in Redis\n", file.Name, file.Size)
 	return nil
 }
 
-func SetupRaft(redisClient *redis.Client) *raft.Raft {
+func SetupRaftCluster(redisClient *redis.Client, nodeMap map[raft.ServerID]raft.ServerAddress) map[raft.ServerID]*RaftNode {
 	raftDir := "./raft_data"
+	nodes := make(map[raft.ServerID]*RaftNode)
 	if err := clearRaftData(raftDir); err != nil {
 		log.Fatalf("Failed to clear Raft logs: %v", err)
 	}
-	config := raft.DefaultConfig()
-	config.LocalID = raft.ServerID("node1")
-	config.LogLevel = "DEBUG"
 
-	transport, err := raft.NewTCPTransport("127.0.0.1:5000", nil, 3, 10*time.Second, os.Stderr)
-	if err != nil {
-		log.Fatalf("failed to create TCP transport: %v", err)
+	for id, addr := range nodeMap {
+		nodeDir := fmt.Sprintf("%s/%s", raftDir, id)
+		if err := os.MkdirAll(nodeDir, 0755); err != nil {
+			log.Fatalf("Failed to create directory for node %s: %v", id, err)
+		}
+		config := raft.DefaultConfig()
+		config.LocalID = id
+		config.LogLevel = "DEBUG"
+
+		transport, err := raft.NewTCPTransport(string(addr), nil, 3, 10*time.Second, os.Stderr)
+		if err != nil {
+			log.Fatalf("Failed to create TCP transport for node %s: %v", id, err)
+		}
+
+		store, err := raftboltdb.NewBoltStore(fmt.Sprintf("%s/raft-log.bolt", nodeDir))
+		if err != nil {
+			log.Fatalf("Failed to create Bolt store for node %s: %v", id, err)
+		}
+
+		snapshotStore, err := raft.NewFileSnapshotStore(nodeDir, 1, os.Stderr)
+		if err != nil {
+			log.Fatalf("Failed to create snapshot store for node %s: %v", id, err)
+		}
+
+		fsm := NewFSM()
+
+		raftNode, err := raft.NewRaft(config, fsm, store, store, snapshotStore, transport)
+		if err != nil {
+			log.Fatalf("Failed to create Raft node %s: %v", id, err)
+		}
+
+		nodes[id] = &RaftNode{
+			ID:   id,
+			Addr: addr,
+			Raft: raftNode,
+		}
 	}
 
-	store, err := raftboltdb.NewBoltStore("raft_data/raft-log.bolt")
-	if err != nil {
-		log.Fatalf("failed to create Bolt store: %v", err)
-	}
-
-	snapshotStore, err := raft.NewFileSnapshotStore(".", 1, os.Stderr)
-	if err != nil {
-		log.Fatalf("failed to create snapshot store: %v", err)
-	}
-	fsm := NewFSM()
-	node, err := raft.NewRaft(config, fsm, store, store, snapshotStore, transport)
-	if err != nil {
-		log.Fatalf("failed to create Raft node: %v", err)
-	}
 	configuration := raft.Configuration{
-		Servers: []raft.Server{
-			{
-				ID:      config.LocalID,
-				Address: transport.LocalAddr(),
-			},
-		},
+		Servers: make([]raft.Server, 0, len(nodeMap)),
 	}
-
-	node.BootstrapCluster(configuration)
-	return node
+	for id, addr := range nodeMap {
+		configuration.Servers = append(configuration.Servers, raft.Server{
+			ID:      id,
+			Address: addr,
+		})
+	}
+	for _, node := range nodes {
+		if err := node.Raft.BootstrapCluster(configuration).Error(); err != nil {
+			return nil
+		}
+	}
+	return nodes
 }
 func clearRaftData(raftDir string) error {
 	err := os.RemoveAll(raftDir)
@@ -107,5 +126,25 @@ func ClearRedisData(redisClient *redis.Client) error {
 		return fmt.Errorf("failed to clear Redis: %v", err)
 	}
 	log.Println("Redis database cleared successfully.")
+	return nil
+}
+func GetLeader(nodes map[raft.ServerID]*RaftNode) *raft.Raft {
+	var leaderNode *RaftNode
+	for _, node := range nodes {
+		leaderID := node.Raft.Leader()
+		fmt.Println("Current Node ID:", node.ID)
+		fmt.Println("Leader ID:", leaderID)
+
+		if leaderID == node.Addr {
+			leaderNode = node
+			break
+		}
+	}
+
+	if leaderNode != nil {
+		return leaderNode.Raft
+	}
+
+	fmt.Println("No leader found.")
 	return nil
 }

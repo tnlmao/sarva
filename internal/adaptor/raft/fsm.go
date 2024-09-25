@@ -23,9 +23,10 @@ func NewFSM() *FSM {
 }
 
 func (f *FSM) Apply(log *raft.Log) interface{} {
+	fmt.Println("------------in fsm-----------------")
 	command := string(log.Data)
 	parts := parseCommand(command)
-
+	i := 0
 	switch parts[0] {
 	case "SET":
 		if len(parts) < 3 {
@@ -36,8 +37,10 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
 		sint, _ := strconv.Atoi(size)
 		f.mu.Lock()
 		f.data[name] = int64(sint)
+		fmt.Println(i)
 		f.mu.Unlock()
 		fmt.Printf("Data applied: %s = %s\n", name, size)
+		i++
 		return nil
 
 	default:
